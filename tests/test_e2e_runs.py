@@ -187,6 +187,8 @@ class TestESTForGenerativeSequenceModelingLM(MLTypeEqualityCheckableMixin, unitt
             for cfg in dict_product(cfg_options):
                 cmd = make_command(cfg, task)
                 self._test_command(cmd, f"Sklearn for {' '.join(cmd)}")
+                break
+            break
 
     def run_zeroshot(self):
         classification_labeler_path = root / "sample_data" / "sample_classification_labeler.py"

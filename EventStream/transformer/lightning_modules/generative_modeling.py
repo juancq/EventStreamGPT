@@ -201,7 +201,11 @@ class ESTForGenerativeSequenceModelingLM(L.LightningModule):
                     case _:
                         raise ValueError(f"Unrecognized modality {task_type}!")
 
-                auc_kwargs = {**metric_kwargs, "thresholds": self.metrics_config.n_auc_thresholds}
+                auc_kwargs = {
+                    **metric_kwargs,
+                    "thresholds": self.metrics_config.n_auc_thresholds,
+                    "compute_on_cpu": True,
+                }
                 for metric, (metric_cls, averagings) in metrics.items():
                     if metric in (Metrics.AUROC, Metrics.AUPRC):
                         metric_cls_kwargs = {**auc_kwargs}
@@ -507,10 +511,16 @@ class PretrainConfig:
             },
         }
     )
-    optimization_config: OptimizationConfig = OptimizationConfig()
-    data_config: PytorchDatasetConfig = PytorchDatasetConfig()
-    pretraining_metrics_config: MetricsConfig = MetricsConfig(do_skip_all_metrics=True)
-    final_validation_metrics_config: MetricsConfig = MetricsConfig(do_skip_all_metrics=False)
+    optimization_config: OptimizationConfig = dataclasses.field(default_factory=lambda: OptimizationConfig())
+    data_config: PytorchDatasetConfig = dataclasses.field(default_factory=lambda: PytorchDatasetConfig())
+    pretraining_metrics_config: MetricsConfig = dataclasses.field(
+        default_factory=lambda: MetricsConfig(
+            include_metrics={Split.TRAIN: {MetricCategories.LOSS_PARTS: True}},
+        )
+    )
+    final_validation_metrics_config: MetricsConfig = dataclasses.field(
+        default_factory=lambda: MetricsConfig(do_skip_all_metrics=False)
+    )
 
     trainer_config: dict[str, Any] = dataclasses.field(
         default_factory=lambda: {

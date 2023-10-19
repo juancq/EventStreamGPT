@@ -160,15 +160,7 @@ class MetricsConfig(JSONableMixin):
 
     def do_log_only_loss(self, split: Split) -> bool:
         """Returns True if only loss should be logged for this split."""
-        if (
-            self.do_skip_all_metrics
-            or split not in self.include_metrics
-            or not self.include_metrics[split]
-            or (
-                (len(self.include_metrics[split]) == 1)
-                and (MetricCategories.LOSS_PARTS in self.include_metrics[split])
-            )
-        ):
+        if self.do_skip_all_metrics or split not in self.include_metrics or not self.include_metrics[split]:
             return True
         else:
             return False
@@ -932,7 +924,7 @@ class StructuredTransformerConfig(PretrainedConfig):
     @classmethod
     def from_dict(cls, *args, **kwargs) -> "StructuredTransformerConfig":
         raw_from_dict = super().from_dict(*args, **kwargs)
-        if raw_from_dict.measurmeent_configs:
+        if raw_from_dict.measurement_configs:
             new_meas_configs = {}
             for k, v in raw_from_dict.measurement_configs.items():
                 new_meas_configs[k] = MeasurementConfig.from_dict(v)

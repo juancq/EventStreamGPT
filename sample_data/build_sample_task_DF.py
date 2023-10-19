@@ -1,10 +1,10 @@
+#!/usr/bin/env python
 import polars as pl, numpy as np
 from pathlib import Path
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from EventStream.data.dataset_polars import Dataset
-from EventStream.evaluation.FT_task_baseline import load_flat_rep, fit_baseline_task_model
 
 @hydra.main(version_base=None)
 def main(cfg: DictConfig):
