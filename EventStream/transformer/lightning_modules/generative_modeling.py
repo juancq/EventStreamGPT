@@ -11,7 +11,10 @@ import torch.multiprocessing
 import torchmetrics
 from lightning.pytorch.callbacks import LearningRateMonitor
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+from lightning.pytorch.loggers import TensorBoardLogger
 from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.loggers import MLFlowLogger
+
 from torchmetrics.classification import (
     MulticlassAccuracy,
     MulticlassAUROC,
@@ -676,6 +679,14 @@ def train(cfg: PretrainConfig):
         optimization_config.gradient_accumulation > 1
     ):
         trainer_kwargs["accumulate_grad_batches"] = optimization_config.gradient_accumulation
+    
+    tensor_logger = TensorBoardLogger(cfg.save_dir)
+    mlf_logger = MLFlowLogger(
+        experiment_name="generative_event_stream_transformer",
+        tracking_uri="file:./mlruns",
+        save_dir=cfg.save_dir,
+    )
+    trainer_kwargs["logger"] = [trainer_kwargs['logger'], tensor_logger, mlf_logger]
 
     # Fitting model
     trainer = L.Trainer(**trainer_kwargs)
