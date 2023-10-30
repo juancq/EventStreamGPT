@@ -81,6 +81,8 @@ class DatasetBase(
     EVENTS_FN: str = "events_df"
     """The name for the ``events_df`` save file."""
 
+    EVENTS_SEPARATOR: str = "&"
+
     DYNAMIC_MEASUREMENTS_FN: str = "dynamic_measurements_df"
     """The name for the ``dynamic_measurements_df`` save file."""
 
