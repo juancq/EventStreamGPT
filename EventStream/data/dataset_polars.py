@@ -679,7 +679,7 @@ class Dataset(DatasetBase[DF_T, INPUT_DF_T]):
                 pl.col("event_id").cast(event_id_dt),
                 pl.col("event_type")
                 .list.eval(pl.col("").cast(pl.Utf8))
-                .list.join(self.EVENT_SEPARATOR)
+                .list.join(self.EVENTS_SEPARATOR)
                 .cast(pl.Categorical)
                 .alias("event_type"),
             )
