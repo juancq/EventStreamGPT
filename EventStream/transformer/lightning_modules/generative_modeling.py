@@ -630,7 +630,8 @@ def train(cfg: PretrainConfig):
         batch_size=optimization_config.batch_size,
         num_workers=optimization_config.num_dataloader_workers,
         collate_fn=train_pyd.collate,
-        shuffle=True,
+        shuffle=optimization_config.train_shuffle,
+        pin_memory=optimization_config.pin_memory,
     )
     tuning_dataloader = torch.utils.data.DataLoader(
         tuning_pyd,
@@ -638,6 +639,7 @@ def train(cfg: PretrainConfig):
         num_workers=optimization_config.num_dataloader_workers,
         collate_fn=tuning_pyd.collate,
         shuffle=False,
+        pin_memory=optimization_config.pin_memory,
     )
 
     # Setting up model configurations
@@ -702,6 +704,7 @@ def train(cfg: PretrainConfig):
             num_workers=optimization_config.num_dataloader_workers,
             collate_fn=held_out_pyd.collate,
             shuffle=False,
+            pin_memory=optimization_config.pin_memory,
         )
 
         LM.metrics_config = cfg.final_validation_metrics_config

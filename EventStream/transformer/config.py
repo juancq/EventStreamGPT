@@ -253,6 +253,8 @@ class OptimizationConfig(JSONableMixin):
     gradient_accumulation: int | None = None
 
     num_dataloader_workers: int = 0
+    pin_memory: bool = False
+    train_shuffle: bool = True
 
     def __post_init__(self):
         if self.end_lr_frac_of_init_lr is not None:
