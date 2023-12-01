@@ -1,11 +1,15 @@
+import copy
 import json
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import polars as pl
 import torch
+from loguru import logger
 from mixins import SaveableMixin, SeedableMixin, TimeableMixin
+from tqdm.auto import tqdm
 
 from .config import (
     MeasurementConfig,
@@ -133,28 +137,20 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
         self.task_types = {}
         self.task_vocabs = {}
 
-        self.vocabulary_config = VocabularyConfig.from_json_file(
-            self.config.save_dir / "vocabulary_config.json"
-        )
-
-        inferred_measurement_config_fp = self.config.save_dir / "inferred_measurement_configs.json"
-        with open(inferred_measurement_config_fp) as f:
-            inferred_measurement_configs = {
-                k: MeasurementConfig.from_dict(v) for k, v in json.load(f).items()
-            }
-        self.measurement_configs = {k: v for k, v in inferred_measurement_configs.items() if not v.is_dropped}
+        self.vocabulary_config = self.config.vocabulary_config
+        self.measurement_configs = self.config.measurement_configs
 
         self.split = split
 
         if self.config.task_df_name is not None:
-            task_dir = self.config.save_dir / "DL_reps" / "for_task" / config.task_df_name
-            raw_task_df_fp = self.config.save_dir / "task_dfs" / f"{self.config.task_df_name}.parquet"
-            task_info_fp = task_dir / "task_info.json"
+            task_dir = self.config.cached_task_dir
+            raw_task_df_fp = self.config.raw_task_df_fp
+            task_info_fp = self.config.task_info_fp
 
             self.has_task = True
 
             if len(list(task_dir.glob(f"{split}*.parquet"))) > 0:
-                print(
+                logger.info(
                     f"Re-loading task data for {self.config.task_df_name} from {task_dir}:\n"
                     f"{', '.join([str(fp) for fp in task_dir.glob(f'{split}*.parquet')])}"
                 )
@@ -203,20 +199,22 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
                             f"Task info differs from on disk!\nDisk:\n{loaded_task_info}\n"
                             f"Local:\n{task_info}\nSplit: {self.split}"
                         )
-                    print(f"Re-built existing {task_info_fp}! Not overwriting...")
+                    logger.info(f"Re-built existing {task_info_fp}! Not overwriting...")
                 else:
                     task_info_fp.parent.mkdir(exist_ok=True, parents=True)
                     with open(task_info_fp, mode="w") as f:
                         json.dump(task_info, f)
 
                 if self.split != "train":
-                    print(f"WARNING: Constructing task-specific dataset on non-train split {self.split}!")
+                    logger.warning(f"Constructing task-specific dataset on non-train split {self.split}!")
                 for cached_data_fp in Path(self.config.save_dir / "DL_reps").glob(f"{split}*.parquet"):
                     task_df_fp = task_dir / cached_data_fp.name
                     if task_df_fp.is_file():
                         continue
 
-                    print(f"Caching DL task dataframe for data file {cached_data_fp} at {task_df_fp}...")
+                    logger.info(
+                        f"Caching DL task dataframe for data file {cached_data_fp} at {task_df_fp}..."
+                    )
 
                     task_cached_data = self._build_task_cached_df(task_df, pl.scan_parquet(cached_data_fp))
 
@@ -250,7 +248,7 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
                     # We fill with 1 here as it will be ignored in the code anyways as the next event's
                     # event mask will be null.
                     # TODO(mmd): validate this in a test.
-                    (pl.col("").shift(-1) - pl.col("")).fill_null(1)
+                    (pl.element().shift(-1) - pl.element()).fill_null(1)
                 )
                 .alias("time_delta"),
             ).drop("time")
@@ -269,7 +267,7 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
             bad_inter_event_times = self.cached_data.filter(pl.col("time_delta").list.min() <= 0).collect()
             bad_subject_ids = [str(x) for x in list(bad_inter_event_times["subject_id"])]
             warning_strs = [
-                f"WARNING: Observed inter-event times <= 0 for {len(bad_inter_event_times)} subjects!",
+                f"Observed inter-event times <= 0 for {len(bad_inter_event_times)} subjects!",
                 f"ESD Subject IDs: {', '.join(bad_subject_ids)}",
                 f"Global min: {stats['min'].item()}",
             ]
@@ -279,7 +277,7 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
                 warning_strs.append(f"Wrote malformed data records to {fp}")
             warning_strs.append("Removing malformed subjects")
 
-            print("\n".join(warning_strs))
+            logger.warning("\n".join(warning_strs))
 
             self.cached_data = self.cached_data.filter(pl.col("time_delta").list.min() > 0)
 
@@ -304,6 +302,8 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
 
         with self._time_as("convert_to_rows"):
             self.subject_ids = self.cached_data["subject_id"]
+            if "time" in self.cached_data.columns:
+                self.cached_data = self.cached_data.drop("time")
             self.cached_data = self.cached_data.drop("subject_id")
             self.columns = self.cached_data.columns
 
@@ -413,13 +413,12 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
         elif "time_delta" in cached_data.columns:
             time_col_expr = pl.col("time_delta").cumsum().over("subject_id")
 
-        start_idx_expr = (
-            time_col_expr.list.explode().search_sorted(pl.col("start_time_min")).over("subject_id")
-        )
-        end_idx_expr = time_col_expr.list.explode().search_sorted(pl.col("end_time_min")).over("subject_id")
+        start_idx_expr = pl.col("time").list.explode().search_sorted(pl.col("start_time_min")).over("task_ID")
+        end_idx_expr = pl.col("time").list.explode().search_sorted(pl.col("end_time_min")).over("task_ID")
 
         return (
-            cached_data.join(task_df, on="subject_id", how="inner", suffix="_task")
+            cached_data.with_columns(time_col_expr.alias("time"))
+            .join(task_df.with_row_count("task_ID"), on="subject_id", how="inner", suffix="_task")
             .with_columns(
                 start_time_min=(pl.col("start_time_task") - pl.col("start_time")) / np.timedelta64(1, "m"),
                 end_time_min=(pl.col("end_time") - pl.col("start_time")) / np.timedelta64(1, "m"),
@@ -430,7 +429,7 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
                     for t in time_dep_cols
                 },
             )
-            .drop("start_time_task", "end_time_min", "start_time_min", "end_time")
+            .drop("start_time_task", "end_time_min", "start_time_min", "end_time", "task_ID")
         )
 
         return cached_data
@@ -528,9 +527,11 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
 
         return full_subj_data
 
-    def __static_and_dynamic_collate(self, batch: list[DATA_ITEM_T]) -> PytorchBatch:
+    def __static_and_dynamic_collate(
+        self, batch: list[DATA_ITEM_T], do_convert_float_nans: bool = True
+    ) -> PytorchBatch:
         """An internal collate function for both static and dynamic data."""
-        out_batch = self.__dynamic_only_collate(batch)
+        out_batch = self.__dynamic_only_collate(batch, do_convert_float_nans=do_convert_float_nans)
 
         # Get the maximum number of static elements in the batch.
         max_n_static = max(len(e["static_indices"]) for e in batch)
@@ -569,7 +570,9 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
 
         return out_batch
 
-    def __dynamic_only_collate(self, batch: list[DATA_ITEM_T]) -> PytorchBatch:
+    def __dynamic_only_collate(
+        self, batch: list[DATA_ITEM_T], do_convert_float_nans: bool = True
+    ) -> PytorchBatch:
         """An internal collate function for dynamic data alone."""
         # Get the local max sequence length and n_data elements for padding.
         max_seq_len = max(len(e["time_delta"]) for e in batch)
@@ -639,13 +642,14 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
         out_batch["event_mask"] = ~out_batch["time_delta"].isnan()
         out_batch["dynamic_values_mask"] = ~out_batch["dynamic_values"].isnan()
 
-        out_batch["time_delta"] = torch.nan_to_num(out_batch["time_delta"], nan=0)
-
         out_batch["dynamic_indices"] = torch.nan_to_num(out_batch["dynamic_indices"], nan=0).long()
         out_batch["dynamic_measurement_indices"] = torch.nan_to_num(
             out_batch["dynamic_measurement_indices"], nan=0
         ).long()
-        out_batch["dynamic_values"] = torch.nan_to_num(out_batch["dynamic_values"], nan=0)
+
+        if do_convert_float_nans:
+            out_batch["time_delta"] = torch.nan_to_num(out_batch["time_delta"], nan=0)
+            out_batch["dynamic_values"] = torch.nan_to_num(out_batch["dynamic_values"], nan=0)
 
         if self.config.do_include_start_time_min:
             out_batch["start_time"] = torch.FloatTensor([e["start_time"] for e in batch])
@@ -687,7 +691,7 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
         return out_batch
 
     @TimeableMixin.TimeAs
-    def collate(self, batch: list[DATA_ITEM_T]) -> PytorchBatch:
+    def collate(self, batch: list[DATA_ITEM_T], do_convert_float_nans: bool = True) -> PytorchBatch:
         """Combines the ragged dictionaries produced by `__getitem__` into a tensorized batch.
 
         This function handles conversion of arrays to tensors and padding of elements within the batch across
@@ -700,6 +704,6 @@ class PytorchDataset(SaveableMixin, SeedableMixin, TimeableMixin, torch.utils.da
             A fully collated, tensorized, and padded batch.
         """
         if self.do_produce_static_data:
-            return self.__static_and_dynamic_collate(batch)
+            return self.__static_and_dynamic_collate(batch, do_convert_float_nans=do_convert_float_nans)
         else:
-            return self.__dynamic_only_collate(batch)
+            return self.__dynamic_only_collate(batch, do_convert_float_nans=do_convert_float_nans)
